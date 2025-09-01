@@ -1,5 +1,5 @@
 from django.db import models
-from django.contrib.auth.models import User
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 
@@ -143,7 +143,7 @@ class InventarioMovimiento(models.Model):
     movimiento_tipo = models.CharField(max_length=3, choices=MOVEMENT_TYPES, verbose_name="Tipo de movimiento")
     cantidad = models.IntegerField(verbose_name="Cantidad")
     notas = models.TextField(blank=True, null=True, verbose_name="Notas")
-    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, verbose_name="Usuario")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, verbose_name="Usuario")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Creado en")
 
     class Meta:
