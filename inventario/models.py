@@ -1,50 +1,41 @@
-from django.db import models
+from django.db import models, transaction, IntegrityError
 from django.conf import settings
-from django.core.exceptions import ValidationError
-from django.utils.translation import gettext_lazy as _
+from django.utils import timezone
+import uuid
 
+# --------------------------
+# CATEGORÍA
+# --------------------------
 class Categoria(models.Model):
-    nombre = models.CharField(max_length=100, unique=True, verbose_name="Nombre")
-    descripcion = models.TextField(blank=True, null=True, verbose_name="Descripción")
-    parent = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True,
-                              related_name='children', verbose_name="Categoría padre")
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Creado en")
-    updated_at = models.DateTimeField(auto_now=True, verbose_name="Actualizado en")
+    nombre = models.CharField(max_length=255, unique=True)
+    descripcion = models.TextField(blank=True, null=True)
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="children"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)  # antes: default=timezone.now
+    updated_at = models.DateTimeField(auto_now=True)      # antes: default=timezone.now
 
     class Meta:
         verbose_name = "Categoría"
         verbose_name_plural = "Categorías"
         ordering = ['nombre']
+        constraints = [
+            models.CheckConstraint(check=~models.Q(parent=models.F("id")), name="categoria_parent_not_self"),
+        ]
 
     def __str__(self):
         return self.nombre
 
-    def get_all_children(self):
-        """Obtiene todas las subcategorías recursivamente"""
-        children = list(self.children.all())
-        for child in self.children.all():
-            children.extend(child.get_all_children())
-        return children
-
-    def get_all_parents(self):
-        """Obtiene todos los padres hasta la raíz"""
-        parents = []
-        if self.parent:
-            parents.append(self.parent)
-            parents.extend(self.parent.get_all_parents())
-        return parents
-
     @property
     def es_raiz(self):
-        """Indica si es una categoría raíz"""
         return self.parent is None
 
     @property
     def nivel(self):
-        """Nivel de profundidad en la jerarquía"""
-        if self.parent is None:
-            return 0
-        # Evita recursión usando aproximación iterativa
         nivel = 0
         current = self
         while current.parent:
@@ -52,79 +43,52 @@ class Categoria(models.Model):
             current = current.parent
         return nivel
 
+# --------------------------
+# PRODUCTO
+# --------------------------
 class Producto(models.Model):
-    # Información básica
-    referencia_codigo = models.CharField(max_length=50, unique=True, verbose_name="Código de referencia")
-    nombre = models.CharField(max_length=200, verbose_name="Nombre")
-    descripcion = models.TextField(blank=True, null=True, verbose_name="Descripción")
-
-    # Relaciones
-    categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True,
-                                 related_name='productos', verbose_name="Categoría")
-
-    # Inventario
-    stock = models.PositiveIntegerField(default=0, verbose_name="Stock actual")
-    min_stock = models.PositiveIntegerField(default=5, verbose_name="Stock mínimo")
-    max_stock = models.PositiveIntegerField(null=True, blank=True, verbose_name="Stock máximo")
-
-    # Precios
-    coste_precio = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Precio de coste")
-    venta_precio = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Precio de venta")
-
-    # Ubicación
-    localizacion = models.CharField(max_length=100, blank=True, null=True, verbose_name="Ubicación")
-    barcode = models.CharField(max_length=100, blank=True, null=True, unique=True, verbose_name="Código de barras")
-
-    # Estado
-    is_active = models.BooleanField(default=True, verbose_name="Activo")
-
-    # Fechas
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Creado en")
-    updated_at = models.DateTimeField(auto_now=True, verbose_name="Actualizado en")
+    nombre = models.CharField(max_length=255, db_index=True)
+    referencia_codigo = models.CharField(max_length=100, unique=True)
+    barcode = models.CharField(max_length=100, blank=True, null=True, unique=True)
+    descripcion = models.TextField(blank=True, null=True)
+    categoria = models.ForeignKey(
+        Categoria,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="productos"
+    )
+    stock = models.PositiveIntegerField(default=0)  # antes: IntegerField
+    min_stock = models.PositiveIntegerField(default=5)
+    max_stock = models.PositiveIntegerField(null=True, blank=True)
+    coste_precio = models.DecimalField(max_digits=12, decimal_places=2, default=0)  # + precisión
+    venta_precio = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    localizacion = models.CharField(max_length=100, blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         verbose_name = "Producto"
         verbose_name_plural = "Productos"
         ordering = ['nombre']
-        indexes = [
-            models.Index(fields=['nombre', 'referencia_codigo']),
-            models.Index(fields=['categoria']),
-            models.Index(fields=['is_active']),
+        constraints = [
+            models.CheckConstraint(check=models.Q(min_stock__gte=0), name="producto_min_stock_nonneg"),
+            models.CheckConstraint(
+                check=models.Q(max_stock__isnull=True) | models.Q(max_stock__gte=models.F("min_stock")),
+                name="producto_max_ge_min_or_null"
+            ),
         ]
 
     def __str__(self):
-        return f"{self.referencia_codigo} - {self.nombre}"
-
-    def clean(self):
-        super().clean()
-
-        # Validaciones de stock
-        if self.stock < 0:
-            raise ValidationError("El stock no puede ser negativo")
-
-        if self.min_stock > self.max_stock and self.max_stock is not None:
-            raise ValidationError("Stock mínimo no puede ser mayor que máximo")
-
-        # Validaciones de precio
-        if self.venta_precio <= self.coste_precio:
-            raise ValidationError({
-                'venta_precio': _('El precio de venta debe ser mayor al precio de coste')
-            })
-
-        # Validación stock máximo
-        if self.max_stock is not None and self.stock > self.max_stock:
-            raise ValidationError({
-                'stock': _(f'El stock no puede exceder el máximo de {self.max_stock}')
-            })
+        return f"{self.nombre} ({self.referencia_codigo})"
 
     @property
     def bajo_stock(self):
-        """Propiedad que indica si el stock es bajo"""
         return self.stock <= self.min_stock
 
     @property
     def estado_stock(self):
-        """Estado textual del stock"""
         if self.stock == 0:
             return "Agotado"
         elif self.bajo_stock:
@@ -132,34 +96,95 @@ class Producto(models.Model):
         else:
             return "Disponible"
 
+# --------------------------
+# INVENTARIO MOVIMIENTO
+# --------------------------
 class InventarioMovimiento(models.Model):
+    IN = "IN"
+    OUT = "OUT"
+    ADJ = "ADJ"
     MOVEMENT_TYPES = (
-        ('IN', 'Entrada'),
-        ('OUT', 'Salida'),
-        ('ADJ', 'Ajuste'),
+        (IN, "Entrada"),
+        (OUT, "Salida"),
+        (ADJ, "Ajuste"),
     )
 
-    producto = models.ForeignKey(Producto, on_delete=models.CASCADE, related_name='movimientos', verbose_name="Producto")
-    movimiento_tipo = models.CharField(max_length=3, choices=MOVEMENT_TYPES, verbose_name="Tipo de movimiento")
-    cantidad = models.IntegerField(verbose_name="Cantidad")
-    notas = models.TextField(blank=True, null=True, verbose_name="Notas")
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, verbose_name="Usuario")
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Creado en")
+    producto = models.ForeignKey(
+        Producto,
+        on_delete=models.CASCADE,
+        related_name="movimientos"
+    )
+    movimiento_tipo = models.CharField(max_length=3, choices=MOVEMENT_TYPES)
+    cantidad = models.PositiveIntegerField()  # antes: IntegerField
+    notas = models.TextField(blank=True, null=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    operation_id = models.CharField(max_length=64, unique=True, default=None, null=True, blank=True)
+    performed_at = models.DateTimeField(default=timezone.now)  # fecha efectiva
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        verbose_name = "Movimiento de inventario"
-        verbose_name_plural = "Movimientos de inventario"
-        ordering = ['-created_at']
+        verbose_name = "Movimiento de Inventario"
+        verbose_name_plural = "Movimientos de Inventario"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["producto", "created_at"]),
+            models.Index(fields=["movimiento_tipo"]),
+        ]
 
     def __str__(self):
-        return f"{self.get_movimiento_tipo_display()} - {self.producto.nombre}"
+        return f"{self.get_movimiento_tipo_display()} - {self.producto.nombre} ({self.cantidad})"
 
     def clean(self):
-        super().clean()
-        if self.cantidad <= 0:
-            raise ValidationError({'cantidad': _('La cantidad debe ser mayor a cero')})
+        # Reglas mínimas por tipo
+        if self.movimiento_tipo in (self.IN, self.OUT) and self.cantidad <= 0:
+            raise IntegrityError("La cantidad debe ser > 0 para entradas/salidas.")
+        if self.movimiento_tipo == self.ADJ and self.cantidad < 0:
+            raise IntegrityError("El ajuste no puede ser negativo (interpreta 'set to').")
 
-        if self.movimiento_tipo == 'OUT' and self.cantidad > self.producto.stock:
-            raise ValidationError({
-                'cantidad': _('No hay suficiente stock para esta salida')
-            })
+    @classmethod
+    def apply(cls, *, producto, movimiento_tipo, cantidad, user=None, notas="", operation_id=None, performed_at=None):
+        """
+        Aplica un movimiento de forma atómica, con bloqueo e idempotencia.
+        ADJ se interpreta como 'fijar el stock a `cantidad`'.
+        """
+        if not operation_id:
+            # si no viene del cliente, no hacemos idempotencia fuerte
+            operation_id = str(uuid.uuid4())
+
+        with transaction.atomic():
+            # Idempotencia
+            existing = cls.objects.filter(operation_id=operation_id).first()
+            if existing:
+                return existing
+
+            # Lock del producto
+            p = Producto.objects.select_for_update().get(pk=producto.pk)
+
+            if movimiento_tipo == cls.IN:
+                p.stock = p.stock + int(cantidad)
+            elif movimiento_tipo == cls.OUT:
+                if p.stock < int(cantidad):
+                    raise IntegrityError("Stock insuficiente para salida.")
+                p.stock = p.stock - int(cantidad)
+            elif movimiento_tipo == cls.ADJ:
+                p.stock = int(cantidad)
+            else:
+                raise IntegrityError("Tipo de movimiento no soportado.")
+
+            p.save(update_fields=["stock", "updated_at"])
+
+            mv = cls.objects.create(
+                producto=p,
+                movimiento_tipo=movimiento_tipo,
+                cantidad=int(cantidad),
+                notas=notas,
+                user=user,
+                operation_id=operation_id,
+                performed_at=performed_at or timezone.now(),
+            )
+            return mv
