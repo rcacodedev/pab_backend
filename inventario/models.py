@@ -53,7 +53,7 @@ class Producto(models.Model):
     descripcion = models.TextField(blank=True, null=True)
     categoria = models.ForeignKey(
         Categoria,
-        on_delete=models.SET_NULL,
+        on_delete=models.CASCADE,
         null=True,
         blank=True,
         related_name="productos"

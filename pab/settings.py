@@ -170,6 +170,7 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+    "idempotency-key",
 ]
 
 # Si usas cookies de sesión o autenticación

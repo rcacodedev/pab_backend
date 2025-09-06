@@ -80,8 +80,12 @@ class ProductoSerializer(serializers.ModelSerializer):
             'is_active', 'bajo_stock', 'estado_stock',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['stock', 'bajo_stock', 'estado_stock', 'created_at', 'updated_at']
+        read_only_fields = ['bajo_stock', 'estado_stock', 'created_at', 'updated_at']
 
+    def validate_stock(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError("El stock no puede ser negativo")
+        return value
 
 class ProductoCreateSerializer(serializers.ModelSerializer):
     """
@@ -93,12 +97,17 @@ class ProductoCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Producto
         fields = [
-            'id','referencia_codigo', 'nombre', 'descripcion', 'categoria',
+            'id','referencia_codigo', 'nombre', 'descripcion', 'categoria', 'stock',
             'min_stock', 'max_stock', 'coste_precio', 'venta_precio',
             'localizacion', 'barcode', 'is_active'
         ]
 
-
+    def validate_stock(self, value):
+        if value is None:
+            return 0
+        if value < 0:
+            raise serializers.ValidationError("El stock no puede ser negativo")
+        return value
 class ProductoListSerializer(serializers.ModelSerializer):
     """Serializer simplificado para listar productos"""
     categoria_nombre = serializers.CharField(source='categoria.nombre', read_only=True)
